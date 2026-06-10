@@ -2,7 +2,7 @@
 
 **Dev environment doctor** — one command to check your entire dev setup. Like `brew doctor` but for project onboarding.
 
-Checks Python/Node/Rust versions against project config, verifies services are running, scans for missing env vars, and confirms essential tools are installed.
+✅ Semver-aware version matching | 🐳 Docker Compose aware | 🗄️ DB connectivity tests | 🔧 Auto-fix mode
 
 ## Install
 
@@ -10,74 +10,98 @@ Checks Python/Node/Rust versions against project config, verifies services are r
 pip install envcheck
 ```
 
-## Usage
+For memory/CPU checks:
+```bash
+pip install envcheck[full]   # adds psutil
+```
+
+## Quick Start
 
 ```bash
 # Check current directory
 envcheck check
 
-# Check a specific project
-envcheck check ~/my-project
+# See only issues
+envcheck check -m summary
 
-# See fix suggestions inline
-envcheck check . -v
+# Full verbose output
+envcheck check -m verbose
 
-# JSON output for scripting
-envcheck check . --json
+# JSON for CI
+envcheck check --json
 
-# Quick onboarding — "what do I need to start?"
+# What do I need to install to contribute?
 envcheck onboard ~/new-project
+
+# Auto-fix common problems
+envcheck fix
+
+# Generate project config
+envcheck init
 ```
 
 ## What it checks
 
 | Category | Checks |
 |----------|--------|
-| **Language Runtimes** | Python (vs `.python-version`, `pyproject.toml`), Node.js (vs `.nvmrc`, `package.json` engines), Rust (vs `rust-toolchain.toml`) |
-| **Dev Tools** | git, make, docker, curl, ssh |
-| **Services** | PostgreSQL (5432), Redis (6379), MySQL (3306), MongoDB (27017), Docker daemon |
-| **Ports** | 3000, 5173, 8080, 8000, 4200, 9000 availability |
-| **Env Vars** | `.env.example` vs `.env` completeness |
-| **System** | OS, disk space, package manager |
+| **Languages** | Python (`.python-version`, `pyproject.toml`, `Pipfile`, `.tool-versions`), Node.js (`.nvmrc`, `package.json` engines), Rust (`rust-toolchain.toml`, `Cargo.toml`), Go (`go.mod`), Java (`build.gradle`, `pom.xml`), Ruby (`Gemfile`, `.ruby-version`) |
+| **Dependencies** | Virtual env (`.venv`/`venv`), `node_modules/`, lock files |
+| **Docker** | `docker-compose.yml` detection, service status (`docker compose ps`) |
+| **Databases** | PostgreSQL (real `psql` test), Redis (real `PING`), MySQL, MongoDB |
+| **Dev Tools** | git, make, docker, curl, ssh, wget, jq, tmux + project-specific recommendations |
+| **Network** | Port availability (3000, 5173, 8080, 8000, 4200, 5000, 11434) |
+| **Env Vars** | `.env.example` vs `.env` key completeness |
+| **System** | OS, disk space, memory, CPU, package manager |
+| **Project** | Project type detection, CI/CD config, pre-commit hooks, linter config |
+| **Custom** | `.envcheck.toml` — project-specific required tools/ports |
 
-## Example output
+## Configuration
+
+Create a `.envcheck.toml` in your project root:
+
+```toml
+# Skip noisy checks
+ignore = "MongoDB,Redis"
+
+# Tools required for this project
+required_tools = "docker,just,pre-commit"
+
+# Ports that must be open
+required_ports = "5432,6379"
+```
+
+## Commands
+
+| Command | What it does |
+|---------|-------------|
+| `envcheck check` | Full environment audit |
+| `envcheck onboard` | Quick setup guide for new contributors |
+| `envcheck fix` | Auto-fix common issues (venv, node_modules, .env) |
+| `envcheck init` | Generate `.envcheck.toml` template |
+
+## Example
 
 ```
 🏥 envcheck — ~/my-project
-Health 95/100  ✅10 ⚠️1 ❌0 ℹ️9
+Health 95/100  ✅14 ⚠️1 ❌0 ℹ️21
 
-  ── Language Runtimes ──
-  ✅  Python           Python 3.12.1
-  ✅  Node.js          v20.11.0
-  ℹ️  Rust             Not installed (ignore if not needed)
+  ── Dependencies ──
+    ⚠️ Python venv: virtual env missing → python -m venv .venv
 
-  ── Dev Tools ──
-  ✅  Git              /usr/bin/git
-  ✅  Docker           /usr/bin/docker
-  ⚠️  Docker           Docker daemon not running
+  ── Docker ──
+    ✅ Compose services: 3 running: db, redis, web
 
-  ── Services ──
-  ✅  PostgreSQL       PostgreSQL running (port 5432)
-  ℹ️  Redis            Redis not running
-
-  ⚠️  Suggestions:
-     • Docker: Docker daemon not running → Start Docker Desktop
+  ── Databases ──
+    ✅ PostgreSQL: connection successful (psql)
+    ✅ Redis: PONG — connection successful
 ```
 
-## Exit codes
+## Exit Codes
 
 | Code | Meaning |
 |------|---------|
 | 0 | All critical checks passed |
 | 2 | Errors found (missing required tools, disk full, etc.) |
-
-## FAQ
-
-**Q: How is this different from `doctor` tools in individual tools?**
-A: `envcheck` is project-scoped — it reads your project's config files and tells you if your environment matches what the project expects. One command instead of `python --version && node --version && docker info && ...`
-
-**Q: Can I add custom checks?**
-A: Not yet, but `.envcheck.toml` config support is on the roadmap.
 
 ## License
 

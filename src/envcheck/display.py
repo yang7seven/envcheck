@@ -1,4 +1,4 @@
-"""Rich rendering for envcheck"""
+"""Rich rendering for envcheck v2 — compact, verbose, and summary modes"""
 
 from __future__ import annotations
 
@@ -12,32 +12,50 @@ from .checks import CheckResult, Status
 
 console = Console()
 
-STATUS_ICONS: dict[Status, str] = {
-    "ok":    "✅",
-    "warn":  "⚠️",
-    "error": "❌",
-    "info":  "ℹ️",
+ICONS: dict[Status, str] = {
+    "ok": "✅", "warn": "⚠️", "error": "❌", "info": "ℹ️",
 }
-
-STATUS_STYLES: dict[Status, str] = {
-    "ok":    "green",
-    "warn":  "yellow",
-    "error": "bold red",
-    "info":  "dim",
+STYLES: dict[Status, str] = {
+    "ok": "green", "warn": "yellow", "error": "bold red", "info": "dim",
 }
 
 
-def print_report(results: list[CheckResult], root: str, verbose: bool = False):
-    """Print the full environment report"""
-    # Header
-    ok_count = sum(1 for r in results if r.status == "ok")
+def _health_score(results: list[CheckResult]) -> int:
+    total = len(results)
+    if total == 0:
+        return 100
     warn_count = sum(1 for r in results if r.status == "warn")
     err_count = sum(1 for r in results if r.status == "error")
-    info_count = sum(1 for r in results if r.status == "info")
+    return max(0, 100 - (warn_count * 5 + err_count * 15))
 
-    # Health score: errors are bad
-    total = len(results)
-    score = max(0, 100 - (warn_count * 5 + err_count * 15)) if total > 0 else 100
+
+def _counts(results: list[CheckResult]) -> tuple[int, int, int, int]:
+    return (
+        sum(1 for r in results if r.status == "ok"),
+        sum(1 for r in results if r.status == "warn"),
+        sum(1 for r in results if r.status == "error"),
+        sum(1 for r in results if r.status == "info"),
+    )
+
+
+def print_summary(results: list[CheckResult], root: str):
+    """Ultra-compact one-line-per-issue output."""
+    score = _health_score(results)
+    color = "green" if score >= 80 else ("yellow" if score >= 50 else "red")
+    console.print()
+    console.print(f"🏥 [bold]{root}[/]  health [bold {color}]{score}/100[/]")
+
+    for r in results:
+        if r.status in ("warn", "error"):
+            icon = ICONS[r.status]
+            fix = f" → {r.fix}" if r.fix else ""
+            console.print(f"  {icon} {r.name}: {r.message}{fix}")
+
+
+def print_compact(results: list[CheckResult], root: str):
+    """Grouped view, only show issues."""
+    score = _health_score(results)
+    ok, warn, err, info = _counts(results)
     color = "green" if score >= 80 else ("yellow" if score >= 50 else "red")
 
     console.print()
@@ -45,109 +63,165 @@ def print_report(results: list[CheckResult], root: str, verbose: bool = False):
         Text.assemble(
             ("🏥 envcheck — ", "bold"),
             (root, "bold white"),
-            ("\n", ""),
-            (f"健康分 {score}/100  ", f"bold {color}"),
-            (f"✅{ok_count} ⚠️{warn_count} ❌{err_count} ℹ️{info_count}", ""),
+            (f"\nHealth {score}/100  ", f"bold {color}"),
+            (f"✅{ok} ⚠️{warn} ❌{err} ℹ️{info}", ""),
+        ),
+        border_style=color,
+    ))
+
+    # Only show warnings and errors
+    issues = [r for r in results if r.status in ("warn", "error")]
+    if not issues:
+        console.print("  ✅ All checks passed!", style="bold green")
+        return
+
+    # Group issues
+    groups: dict[str, list[CheckResult]] = {}
+    group_order = [
+        "Languages", "Dependencies", "Docker", "Databases",
+        "Tools", "Ports", "Env Vars", "System", "Project", "Custom",
+    ]
+    for g in group_order:
+        groups[g] = []
+
+    _group_map = {
+        "Python": "Languages", "Python version": "Languages",
+        "Node.js": "Languages", "Node.js version": "Languages",
+        "Rust": "Languages", "Rust toolchain": "Languages", "Cargo.toml": "Languages",
+        "Go": "Languages", "Go version": "Languages", "go.mod": "Languages",
+        "Java": "Languages", "Gradle": "Languages", "Maven": "Languages",
+        "Ruby": "Languages", "Ruby version": "Languages", "Gemfile": "Languages",
+        "Python venv": "Dependencies", "node_modules": "Dependencies",
+        "Lock file": "Dependencies",
+        "Docker Compose": "Docker", "Compose services": "Docker",
+        "Docker Compose status": "Docker",
+        "PostgreSQL": "Databases", "Redis": "Databases", "MySQL": "Databases",
+        "MongoDB": "Databases", "DB config": "Databases",
+    }
+
+    for r in issues:
+        g = _group_map.get(r.name, "Tools" if r.name.capitalize() in
+            ["Git", "Make", "Docker", "Curl", "Ssh", "Wget", "Htop", "Jq", "Tmux"]
+            else ("Ports" if "port" in r.name.lower() else
+                  ("Env Vars" if "env" in r.name.lower() else
+                   ("System" if r.name in ("OS", "Disk space", "Memory", "CPU", "Package manager") else
+                    ("Project" if r.name in ("Project type", "CI/CD", "Pre-commit", "Linters") else
+                     "Custom")))))
+        if r.name.startswith("Required"):
+            g = "Custom"
+        groups.setdefault(g, []).append(r)
+
+    for g in group_order:
+        items = groups.get(g, [])
+        if items:
+            console.print(f"  ── {g} ──", style="bold underline")
+            for r in items:
+                icon = ICONS[r.status]
+                style = STYLES[r.status]
+                fix = f" → [dim]{r.fix}[/]" if r.fix else ""
+                console.print(f"    {icon} [{style}]{r.name}[/]: {r.message}{fix}")
+
+    console.print()
+
+
+def print_verbose(results: list[CheckResult], root: str):
+    """Full output with all checks, including passed ones."""
+    score = _health_score(results)
+    ok, warn, err, info = _counts(results)
+    color = "green" if score >= 80 else ("yellow" if score >= 50 else "red")
+
+    console.print()
+    console.print(Panel(
+        Text.assemble(
+            ("🏥 envcheck — ", "bold"),
+            (root, "bold white"),
+            (f"\nHealth {score}/100  ", f"bold {color}"),
+            (f"✅{ok} ⚠️{warn} ❌{err} ℹ️{info}", ""),
         ),
         border_style=color,
     ))
     console.print()
 
-    # Group results
-    groups = {
-        "语言运行时": [],
-        "开发工具": [],
-        "后台服务": [],
-        "网络端口": [],
-        "环境变量": [],
-        "系统资源": [],
-        "其它": [],
-    }
-
-    group_map = {
-        "Python 版本": "语言运行时", "Python 版本匹配": "语言运行时", "Python 版本要求": "语言运行时",
-        "Node.js": "语言运行时", "Node 版本匹配": "语言运行时", "Node engines": "语言运行时",
-        "Rust": "语言运行时", "Rust toolchain": "语言运行时",
-        "Git": "开发工具", "Make": "开发工具", "Docker": "开发工具",
-        "Curl": "开发工具", "Ssh": "开发工具",
-        "PostgreSQL": "后台服务", "Redis": "后台服务", "MySQL": "后台服务",
-        "MongoDB": "后台服务",
-        "端口占用": "网络端口", "可用端口": "网络端口",
-        "环境变量": "环境变量", "环境变量缺失": "环境变量", "额外环境变量": "环境变量",
-        ".env": "环境变量",
-        "操作系统": "系统资源", "磁盘空间": "系统资源", "包管理器": "系统资源",
-    }
-
+    # Group ALL results
+    groups: dict[str, list[CheckResult]] = {}
     for r in results:
-        g = group_map.get(r.name, "其它")
-        groups[g].append(r)
+        g = "Other"
+        for prefix in ["Python", "Node.js", "Rust", "Go", "Java", "Ruby", "Cargo", "Gemfile"]:
+            if r.name.startswith(prefix):
+                g = "Languages"
+                break
+        for kw in ["venv", "node_modules", "Lock"]:
+            if kw in r.name:
+                g = "Dependencies"
+                break
+        for kw in ["Compose", "Compose service"]:
+            if kw in r.name:
+                g = "Docker"
+                break
+        for db in ["PostgreSQL", "Redis", "MySQL", "MongoDB", "DB config"]:
+            if r.name == db:
+                g = "Databases"
+                break
+        for tool in ["Git", "Make", "Docker", "Curl", "Ssh", "Wget", "Htop", "Jq", "Tmux"]:
+            if r.name == tool:
+                g = "Tools"
+                break
+        if "port" in r.name.lower():
+            g = "Ports"
+        if "env" in r.name.lower() and "envcheck" not in r.name.lower():
+            g = "Env Vars"
+        for sys_name in ["OS", "Disk space", "Memory", "CPU", "Package manager"]:
+            if r.name == sys_name:
+                g = "System"
+                break
+        for proj_name in ["Project type", "CI/CD", "Pre-commit", "Linters"]:
+            if r.name == proj_name:
+                g = "Project"
+                break
 
-    # Render each group
-    for group_name in ["语言运行时", "开发工具", "后台服务", "网络端口", "环境变量", "系统资源"]:
-        items = groups.get(group_name, [])
+        groups.setdefault(g, []).append(r)
+
+    for g_name in ["Languages", "Dependencies", "Docker", "Databases",
+                    "Tools", "Ports", "Env Vars", "Project", "System", "Custom"]:
+        items = groups.get(g_name, [])
         if not items:
             continue
 
-        console.print(f"  ── {group_name} ──", style="bold underline")
-
+        console.print(f"  ── {g_name} ──", style="bold underline")
         table = Table(show_header=False, box=box.SIMPLE, padding=(0, 1))
-        table.add_column("icon", width=2)
-        table.add_column("name", width=16)
-        table.add_column("message", ratio=1)
-        table.add_column("fix", ratio=1)
+        table.add_column("", width=2)
+        table.add_column("Check", width=18)
+        table.add_column("Status", ratio=1)
+        table.add_column("Fix", ratio=1)
 
         for r in items:
-            icon = STATUS_ICONS.get(r.status, "?")
-            style = STATUS_STYLES.get(r.status, "")
+            icon = ICONS[r.status]
+            style = STYLES[r.status]
             table.add_row(
                 icon,
                 Text(r.name, style="bold"),
                 Text(r.message, style=style),
-                Text(r.fix, style="dim") if r.fix and verbose else Text(r.detail, style="dim"),
+                Text(r.fix, style="dim") if r.fix else Text(r.detail, style="dim"),
             )
 
         console.print(table)
-
-    # Errors summary
-    errors = [r for r in results if r.status == "error"]
-    if errors:
-        console.print()
-        console.print("  ❌ 必须修复:", style="bold red")
-        for r in errors:
-            console.print(f"     • {r.name}: {r.message}")
-
-    warnings = [r for r in results if r.status == "warn"]
-    if warnings:
-        console.print()
-        console.print("  ⚠️ 建议修复:", style="bold yellow")
-        for r in warnings[:8]:
-            fix_hint = f" → {r.fix}" if r.fix else ""
-            console.print(f"     • {r.name}: {r.message}{fix_hint}")
 
     console.print()
 
 
 def print_json(results: list[CheckResult], root: str):
-    """JSON output"""
-    import json
-    ok_count = sum(1 for r in results if r.status == "ok")
-    warn_count = sum(1 for r in results if r.status == "warn")
-    err_count = sum(1 for r in results if r.status == "error")
-
+    score = _health_score(results)
+    ok, warn, err, info = _counts(results)
     output = {
         "root": root,
-        "ok": ok_count,
-        "warn": warn_count,
-        "error": err_count,
-        "health_score": max(0, 100 - (warn_count * 5 + err_count * 15)),
+        "health_score": score,
+        "ok": ok, "warn": warn, "error": err, "info": info,
         "results": [
-            {
-                "name": r.name,
-                "status": r.status,
-                "message": r.message,
-                "fix": r.fix,
-            }
+            {"name": r.name, "status": r.status, "message": r.message, "fix": r.fix}
             for r in results
         ],
     }
     console.print(json.dumps(output, ensure_ascii=False, indent=2))
+
+
+import json  # noqa: E402 (import at top but referenced in function)
